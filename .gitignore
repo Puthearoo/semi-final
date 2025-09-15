@@ -1,0 +1,12 @@
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Build / Deployment
+*.tar.gz
+dist/
+build/
+
+# Environment
+.env
