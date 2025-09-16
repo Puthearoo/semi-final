@@ -24,12 +24,12 @@ jobs:
 
       - name: Install backend dependencies
         run: |
-          cd semi-final/backend
+          cd backend
           npm install
 
       - name: Run backend tests (if any)
         run: |
-          cd semi-final/backend
+          cd backend
           if npm run | grep -q " test"; then
             echo "✅ Test script found, running tests..."
             npm test
@@ -49,12 +49,12 @@ jobs:
 
       - name: Install frontend dependencies
         run: |
-          cd semi-final/frontend
+          cd frontend
           npm install
 
       - name: Run frontend tests (if any)
         run: |
-          cd semi-final/frontend
+          cd frontend
           if npm run | grep -q " test"; then
             echo "✅ Test script found, running tests..."
             npm test -- --watchAll=false --passWithNoTests
