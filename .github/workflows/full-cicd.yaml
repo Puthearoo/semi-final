@@ -1,0 +1,177 @@
+name: Full CI/CD
+
+on:
+  push:
+    branches: [test-workflow, development]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # ------------------ Backend Tests ------------------
+  backend-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: "18"
+
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          npm ci
+
+      - name: Run backend tests (if any)
+        run: |
+          cd backend
+          if npm run | grep -q " test"; then
+            echo "✅ Test script found, running tests..."
+            npm test
+          else
+            echo "⚠️ No tests found, skipping"
+          fi
+
+  # ------------------ Frontend Tests ------------------
+  frontend-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: "18"
+
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Run frontend tests (if any)
+        run: |
+          cd frontend
+          if npm run | grep -q " test"; then
+            echo "✅ Test script found, running tests..."
+            npm test -- --watchAll=false
+          else
+            echo "⚠️ No tests found, skipping"
+          fi
+
+  # ------------------ Deploy and ngrok ------------------
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: [backend-test, frontend-test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Package Backend ---
+      - name: Package backend
+        run: |
+          tar -czf backend.tar.gz --exclude='backend/node_modules' backend/
+
+      # --- Package Frontend ---
+      - name: Package frontend
+        run: |
+          tar -czf frontend.tar.gz -C frontend .
+
+      # --- Test SSH Connection ---
+      - name: Test SSH
+        uses: appleboy/ssh-action@v1.2.1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          timeout: "30s"
+          script: echo "✅ SSH connection successful"
+
+      # --- Upload Packages ---
+      - name: Upload backend
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          source: "backend.tar.gz"
+          target: "/tmp/"
+
+      - name: Upload frontend
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          source: "frontend.tar.gz"
+          target: "/tmp/"
+
+      # --- Deploy Backend ---
+      - name: Deploy backend
+        uses: appleboy/ssh-action@v1.2.1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            set -e
+            APP_DIR="/home/roo/my-cd-practice/backend"
+            PM2_APP_NAME="sample-backend"
+
+            mkdir -p $APP_DIR
+            tar -xzf /tmp/backend.tar.gz -C /home/roo/my-cd-practice
+            cd $APP_DIR
+            npm install --production
+
+            pm2 delete $PM2_APP_NAME 2>/dev/null || true
+            pm2 start npm --name "$PM2_APP_NAME" -- start
+            pm2 save
+            echo "✅ Backend deployed successfully!"
+
+      # --- Deploy Frontend ---
+      - name: Deploy frontend
+        uses: appleboy/ssh-action@v1.2.1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            set -e
+            FRONT_DIR="/var/www/html"
+            sudo mkdir -p $FRONT_DIR
+            sudo rm -rf $FRONT_DIR/*
+            sudo tar -xzf /tmp/frontend.tar.gz -C $FRONT_DIR
+            sudo chown -R www-data:www-data $FRONT_DIR
+            sudo chmod -R 755 $FRONT_DIR
+            sudo systemctl reload nginx
+            echo "✅ Frontend deployed successfully!"
+
+      # --- Setup ngrok Tunnel ---
+      - name: Setup ngrok
+        uses: appleboy/ssh-action@v1.2.1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            set -e
+            # Download ngrok if not exist
+            if ! command -v ngrok &> /dev/null; then
+              wget https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip -O ngrok.zip
+              unzip ngrok.zip
+              sudo mv ngrok /usr/local/bin/
+            fi
+            # Authenticate ngrok
+            ngrok authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+            # Start tunnel for backend port 3000
+            nohup ngrok http 3000 > ngrok.log 2>&1 &
+            sleep 5
+            echo "✅ ngrok tunnel started"
+            curl http://127.0.0.1:4040/api/tunnels
