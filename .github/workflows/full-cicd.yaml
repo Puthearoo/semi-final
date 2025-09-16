@@ -35,6 +35,7 @@ jobs:
             npm test
           else
             echo "⚠️ No tests found, skipping"
+          fi
 
   # ------------------ Frontend Tests ------------------
   frontend-test:
@@ -60,6 +61,7 @@ jobs:
             npm test -- --watchAll=false --passWithNoTests
           else
             echo "⚠️ No tests found, skipping"
+          fi
 
   # ------------------ Deploy and ngrok ------------------
   deploy:
