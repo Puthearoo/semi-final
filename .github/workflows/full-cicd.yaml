@@ -21,15 +21,15 @@ jobs:
 
       - name: Install backend dependencies
         run: |
-          cd backend
+          cd semi-final/semi-final/backend
           npm install
 
       - name: Run backend tests (if any)
         run: |
-          cd backend
+          cd semi-final/semi-final/backend
           if npm run | grep -q " test"; then
             echo "✅ Test script found, running tests..."
-            npm test
+            npm test -- --passWithNoTests
           else
             echo "⚠️ No tests found, skipping"
           fi
@@ -47,13 +47,12 @@ jobs:
 
       - name: Install frontend dependencies
         run: |
-          cd frontend
+          cd semi-final/semi-final/frontend
           npm install
 
       - name: Run frontend tests (if any)
         run: |
-          cd frontend
-
+          cd semi-final/semi-final/frontend
           if npm run | grep -q " test"; then
             echo "✅ Test script found, running tests..."
             npm test -- --watchAll=false --passWithNoTests
@@ -72,12 +71,12 @@ jobs:
       # --- Package Backend ---
       - name: Package backend
         run: |
-          tar -czf backend.tar.gz --exclude='backend/node_modules' backend/
+          tar -czf backend.tar.gz --exclude='semi-final/semi-final/backend/node_modules' semi-final/semi-final/backend/
 
       # --- Package Frontend ---
       - name: Package frontend
         run: |
-          tar -czf frontend.tar.gz -C frontend .
+          tar -czf frontend.tar.gz -C semi-final/semi-final/frontend .
 
       # --- Test SSH Connection ---
       - name: Test SSH
@@ -109,9 +108,10 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
           source: "frontend.tar.gz"
-          target: "/tmp/"
+          target:
+            "/tmp/"
 
-      # --- Deploy Backend ---
+            # --- Deploy Backend ---
       - name: Deploy backend
         uses: appleboy/ssh-action@v1.2.1
         with:
@@ -122,7 +122,7 @@ jobs:
           script: |
             set -e
             APP_DIR="/home/roo/my-cd-practice/backend"
-            PM2_APP_NAME="sample-backend"
+            PM2_APP_NAME="semi-backend"
 
             mkdir -p $APP_DIR
             tar -xzf /tmp/backend.tar.gz -C /home/roo/my-cd-practice
@@ -163,15 +163,12 @@ jobs:
           port: ${{ secrets.SSH_PORT }}
           script: |
             set -e
-            # Download ngrok if not exist
             if ! command -v ngrok &> /dev/null; then
               wget https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip -O ngrok.zip
               unzip ngrok.zip
               sudo mv ngrok /usr/local/bin/
             fi
-            # Authenticate ngrok
             ngrok authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-            # Start tunnel for backend port 3000
             nohup ngrok http 3000 > ngrok.log 2>&1 &
             sleep 5
             echo "✅ ngrok tunnel started"
