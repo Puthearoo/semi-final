@@ -1,15 +1,16 @@
-name: Full CI/CD
+name: Full CI/CD Pipeline
 
 on:
-  push:
-    branches: [test-workflow, development]
   pull_request:
     branches: [main]
-  workflow_dispatch:
+  push:
+    branches: [main]
 
 jobs:
   # ------------------ Backend Tests ------------------
   backend-test:
+    # Run tests on PR to main
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,16 +28,12 @@ jobs:
       - name: Run backend tests
         run: |
           cd backend
-          if [ -f package.json ] && npm run | grep -q " test"; then
-            echo "✅ Test script found, running tests..."
-            npm test
-          else
-            echo "⚠️ No tests found, skipping"
-            exit 0  # Don't fail if no tests
-          fi
+          npm test
 
   # ------------------ Frontend Tests ------------------
   frontend-test:
+    # Run tests on PR to main
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -54,18 +51,12 @@ jobs:
       - name: Run frontend tests
         run: |
           cd frontend
-          if [ -f package.json ] && npm run | grep -q " test"; then
-            echo "✅ Test script found, running tests..."
-            npm test -- --watchAll=false --passWithNoTests
-          else
-            echo "⚠️ No tests found, skipping"
-            exit 0  # Don't fail if no tests
-          fi
+          npm test -- --watchAll=false --passWithNoTests
 
-  # ------------------ Deploy and ngrok ------------------
+  # ------------------ Deploy to Server ------------------
   deploy:
-    if: github.ref == 'refs/heads/main'
-    needs: [backend-test, frontend-test]
+    # Only deploy when code is pushed/merged to main branch
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -75,10 +66,14 @@ jobs:
         run: |
           tar -czf backend.tar.gz backend
 
-      # --- Package Frontend ---
-      - name: Package frontend
+      # --- Build and Package Frontend ---
+      - name: Build and package frontend
         run: |
-          tar -czf frontend.tar.gz frontend
+          cd frontend
+          npm install
+          npm run build
+          cd ..
+          tar -czf frontend.tar.gz frontend/build
 
       # --- Test SSH Connection ---
       - name: Test SSH
@@ -88,7 +83,6 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
-          timeout: "30s"
           script: echo "✅ SSH connection successful"
 
       # --- Upload Packages ---
@@ -171,7 +165,7 @@ jobs:
               rm ngrok.zip
             fi
             ngrok authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-            pkill ngrok || true  # Kill any existing ngrok processes
+            pkill ngrok || true
             nohup ngrok http 3000 > /tmp/ngrok.log 2>&1 &
             sleep 5
             echo "✅ ngrok tunnel started"
