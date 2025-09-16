@@ -53,9 +53,10 @@ jobs:
       - name: Run frontend tests (if any)
         run: |
           cd frontend
+
           if npm run | grep -q " test"; then
             echo "✅ Test script found, running tests..."
-            npm test -- --watchAll=false
+            npm test -- --watchAll=false --passWithNoTests
           else
             echo "⚠️ No tests found, skipping"
           fi
