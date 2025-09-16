@@ -19,22 +19,20 @@ jobs:
         with:
           node-version: "18"
 
-      - name: List repo structure
-        run: ls -la
-
       - name: Install backend dependencies
         run: |
           cd backend
           npm install
 
-      - name: Run backend tests (if any)
+      - name: Run backend tests
         run: |
           cd backend
-          if npm run | grep -q " test"; then
+          if [ -f package.json ] && npm run | grep -q " test"; then
             echo "✅ Test script found, running tests..."
             npm test
           else
             echo "⚠️ No tests found, skipping"
+            exit 0  # Don't fail if no tests
           fi
 
   # ------------------ Frontend Tests ------------------
@@ -53,14 +51,15 @@ jobs:
           cd frontend
           npm install
 
-      - name: Run frontend tests (if any)
+      - name: Run frontend tests
         run: |
           cd frontend
-          if npm run | grep -q " test"; then
+          if [ -f package.json ] && npm run | grep -q " test"; then
             echo "✅ Test script found, running tests..."
             npm test -- --watchAll=false --passWithNoTests
           else
             echo "⚠️ No tests found, skipping"
+            exit 0  # Don't fail if no tests
           fi
 
   # ------------------ Deploy and ngrok ------------------
@@ -74,12 +73,12 @@ jobs:
       # --- Package Backend ---
       - name: Package backend
         run: |
-          tar -czf backend.tar.gz -C semi-final backend
+          tar -czf backend.tar.gz backend
 
       # --- Package Frontend ---
       - name: Package frontend
         run: |
-          tar -czf frontend.tar.gz -C semi-final/frontend .
+          tar -czf frontend.tar.gz frontend
 
       # --- Test SSH Connection ---
       - name: Test SSH
@@ -123,11 +122,11 @@ jobs:
           port: ${{ secrets.SSH_PORT }}
           script: |
             set -e
-            APP_DIR="/home/roo/semi-final/backend"
+            APP_DIR="/home/roo/backend"
             PM2_APP_NAME="semi-backend"
 
             mkdir -p $APP_DIR
-            tar -xzf /tmp/backend.tar.gz -C /home/roo/semi-final
+            tar -xzf /tmp/backend.tar.gz -C $APP_DIR --strip-components=1
             cd $APP_DIR
             npm install --production
 
@@ -149,7 +148,7 @@ jobs:
             FRONT_DIR="/var/www/html"
             sudo mkdir -p $FRONT_DIR
             sudo rm -rf $FRONT_DIR/*
-            sudo tar -xzf /tmp/frontend.tar.gz -C $FRONT_DIR
+            sudo tar -xzf /tmp/frontend.tar.gz -C $FRONT_DIR --strip-components=1
             sudo chown -R www-data:www-data $FRONT_DIR
             sudo chmod -R 755 $FRONT_DIR
             sudo systemctl reload nginx
@@ -169,9 +168,11 @@ jobs:
               wget https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip -O ngrok.zip
               unzip ngrok.zip
               sudo mv ngrok /usr/local/bin/
+              rm ngrok.zip
             fi
             ngrok authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-            nohup ngrok http 3000 > ngrok.log 2>&1 &
+            pkill ngrok || true  # Kill any existing ngrok processes
+            nohup ngrok http 3000 > /tmp/ngrok.log 2>&1 &
             sleep 5
             echo "✅ ngrok tunnel started"
-            curl http://127.0.0.1:4040/api/tunnels
+            curl -s http://127.0.0.1:4040/api/tunnels | grep -o '"public_url":"[^"]*"'
