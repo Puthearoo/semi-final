@@ -19,20 +19,22 @@ jobs:
         with:
           node-version: "18"
 
+      - name: List repo structure
+        run: ls -la
+
       - name: Install backend dependencies
         run: |
-          cd semi-final/semi-final/backend
+          cd semi-final/backend
           npm install
 
       - name: Run backend tests (if any)
         run: |
-          cd semi-final/semi-final/backend
+          cd semi-final/backend
           if npm run | grep -q " test"; then
             echo "✅ Test script found, running tests..."
-            npm test -- --passWithNoTests
+            npm test
           else
             echo "⚠️ No tests found, skipping"
-          fi
 
   # ------------------ Frontend Tests ------------------
   frontend-test:
@@ -47,18 +49,17 @@ jobs:
 
       - name: Install frontend dependencies
         run: |
-          cd semi-final/semi-final/frontend
+          cd semi-final/frontend
           npm install
 
       - name: Run frontend tests (if any)
         run: |
-          cd semi-final/semi-final/frontend
+          cd semi-final/frontend
           if npm run | grep -q " test"; then
             echo "✅ Test script found, running tests..."
             npm test -- --watchAll=false --passWithNoTests
           else
             echo "⚠️ No tests found, skipping"
-          fi
 
   # ------------------ Deploy and ngrok ------------------
   deploy:
@@ -71,12 +72,12 @@ jobs:
       # --- Package Backend ---
       - name: Package backend
         run: |
-          tar -czf backend.tar.gz --exclude='semi-final/semi-final/backend/node_modules' semi-final/semi-final/backend/
+          tar -czf backend.tar.gz -C semi-final backend
 
       # --- Package Frontend ---
       - name: Package frontend
         run: |
-          tar -czf frontend.tar.gz -C semi-final/semi-final/frontend .
+          tar -czf frontend.tar.gz -C semi-final/frontend .
 
       # --- Test SSH Connection ---
       - name: Test SSH
@@ -108,10 +109,9 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
           source: "frontend.tar.gz"
-          target:
-            "/tmp/"
+          target: "/tmp/"
 
-            # --- Deploy Backend ---
+      # --- Deploy Backend ---
       - name: Deploy backend
         uses: appleboy/ssh-action@v1.2.1
         with:
@@ -121,11 +121,11 @@ jobs:
           port: ${{ secrets.SSH_PORT }}
           script: |
             set -e
-            APP_DIR="/home/roo/my-cd-practice/backend"
+            APP_DIR="/home/roo/semi-final/backend"
             PM2_APP_NAME="semi-backend"
 
             mkdir -p $APP_DIR
-            tar -xzf /tmp/backend.tar.gz -C /home/roo/my-cd-practice
+            tar -xzf /tmp/backend.tar.gz -C /home/roo/semi-final
             cd $APP_DIR
             npm install --production
 
