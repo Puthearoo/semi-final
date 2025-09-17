@@ -167,46 +167,45 @@ jobs:
 
             echo "✅ Frontend deployed successfully!"
 
-      # --- Setup ngrok Tunnel ---
-      - name: Setup ngrok
-        uses: appleboy/ssh-action@v1.2.1
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT }}
-          script: |
-            set -e
-            # Install ngrok if not installed
-            if ! command -v ngrok &> /dev/null; then
-              echo "📦 Installing ngrok..."
-              wget https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip -O ngrok.zip
-              unzip ngrok.zip
-              sudo mv ngrok /usr/local/bin/
-              rm ngrok.zip
-            fi
+      # # --- Setup ngrok Tunnel ---
+      # - name: Setup ngrok
+      #   uses: appleboy/ssh-action@v1.2.1
+      #   with:
+      #     host: ${{ secrets.SSH_HOST }}
+      #     username: ${{ secrets.SSH_USER }}
+      #     key: ${{ secrets.SSH_PRIVATE_KEY }}
+      #     port: ${{ secrets.SSH_PORT }}
+      #     script: |
+      #       set -e
+      #       # Install ngrok if not installed
+      #       if ! command -v ngrok &> /dev/null; then
+      #         echo "📦 Installing ngrok..."
+      #         wget https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip -O ngrok.zip
+      #         unzip ngrok.zip
+      #         sudo mv ngrok /usr/local/bin/
+      #         rm ngrok.zip
+      #       fi
 
-            # Set auth token
-            ngrok authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+      #       # Set auth token
 
-            # Kill any existing ngrok processes
-            pkill -f ngrok || true
-            sleep 2
+      #       # Kill any existing ngrok processes
+      #       pkill -f ngrok || true
+      #       sleep 2
 
-            # Start ngrok for port 3001 (frontend)
-            nohup ngrok http 3001 > /tmp/ngrok.log 2>&1 &
+      #       # Start ngrok for port 3001 (frontend)
+      #       nohup ngrok http 3001 > /tmp/ngrok.log 2>&1 &
 
-            # Wait a bit for ngrok to start
-            sleep 10
+      #       # Wait a bit for ngrok to start
+      #       sleep 10
 
-            # Check if ngrok is running
-            if pgrep -f ngrok > /dev/null; then
-              echo "✅ ngrok tunnel started successfully"
-              # Get public URL
-              echo "🌐 Frontend Public URL:"
-              curl -s http://127.0.0.1:4040/api/tunnels | grep -o '"public_url":"[^"]*"' | head -1
-            else
-              echo "❌ ngrok failed to start"
-              cat /tmp/ngrok.log || true
-              exit 1
-            fi
+      #       # Check if ngrok is running
+      #       if pgrep -f ngrok > /dev/null; then
+      #         echo "✅ ngrok tunnel started successfully"
+      #         # Get public URL
+      #         echo "🌐 Frontend Public URL:"
+      #         curl -s http://127.0.0.1:4040/api/tunnels | grep -o '"public_url":"[^"]*"' | head -1
+      #       else
+      #         echo "❌ ngrok failed to start"
+      #         cat /tmp/ngrok.log || true
+      #         exit 1
+      #       fi
