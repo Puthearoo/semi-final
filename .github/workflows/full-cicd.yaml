@@ -56,13 +56,6 @@ jobs:
           cd ..
           tar -czf frontend.tar.gz frontend/build
 
-      # Debug: Show SSH key info (masked)
-      - name: Debug SSH Key
-        run: |
-          echo "SSH key length: ${#SSH_PRIVATE_KEY}"
-          echo "SSH key starts with: $(echo "${{ secrets.SSH_PRIVATE_KEY }}" | head -c 20)"
-          echo "SSH user: ${{ secrets.SSH_USER }}"
-
       # Create SSH tunnel via ngrok since server is on private network
       - name: Setup ngrok SSH tunnel
         id: ngrok-tunnel
@@ -80,10 +73,10 @@ jobs:
           # Start ngrok TCP tunnel for SSH
           ./ngrok tcp 22 --log=stdout > ngrok.log &
           NGORK_PID=$!
-          sleep 8
+          sleep 10
 
           # Get public URL with multiple retries
-          for i in {1..15}; do
+          for i in {1..20}; do
             if curl -s http://127.0.0.1:4040/api/tunnels > tunnels.json 2>/dev/null; then
               NGROK_URL=$(grep -o 'tcp://[^"]*' tunnels.json | head -1)
               if [ -n "$NGROK_URL" ]; then
@@ -95,13 +88,9 @@ jobs:
           done
 
           if [ -z "$NGROK_URL" ]; then
-            echo "❌ Failed to get ngrok URL after 15 attempts"
+            echo "❌ Failed to get ngrok URL after 20 attempts"
             echo "Ngrok log:"
             cat ngrok.log
-            echo "Tunnels API response:"
-            cat tunnels.json 2>/dev/null || echo "No tunnels.json file"
-            # Try to kill ngrok process
-            kill $NGORK_PID 2>/dev/null || true
             exit 1
           fi
 
@@ -114,216 +103,193 @@ jobs:
           echo "NGROK_PORT=$NGROK_PORT" >> $GITHUB_ENV
           echo "🌐 Ngrok tunnel established: $NGROK_HOST:$NGROK_PORT"
 
-      # Test basic connectivity first
-      - name: Test basic connectivity
+      # Convert OpenSSH private key to PEM format (more compatible)
+      - name: Convert SSH key to PEM format
         run: |
-          echo "Testing connectivity to ${{ env.NGROK_HOST }}:${{ env.NGROK_PORT }}"
+          echo "🔄 Converting OpenSSH private key to PEM format..."
+
+          # Create the OpenSSH key file
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > openssh_key
+          chmod 600 openssh_key
+
+          # Convert to PEM format
+          ssh-keygen -p -N "" -m pem -f openssh_key >/dev/null 2>&1
+
+          # Verify the conversion worked
+          if ssh-keygen -l -f openssh_key >/dev/null 2>&1; then
+            echo "✅ Key successfully converted to PEM format"
+            # Use the converted key
+            cp openssh_key pem_key
+          else
+            echo "⚠️ Key conversion failed, using original key"
+            echo "${{ secrets.SSH_PRIVATE_KEY }}" > pem_key
+          fi
+
+          chmod 600 pem_key
+
+          # Test the key
+          echo "Testing key format..."
+          ssh-keygen -l -f pem_key
+
+      # Test SSH connection with the converted key
+      - name: Test SSH connection
+        run: |
+          echo "🔐 Testing SSH connection with converted key..."
+
+          # Test basic connectivity first
+          echo "Testing port connectivity..."
           timeout 10 bash -c "echo > /dev/tcp/${{ env.NGROK_HOST }}/${{ env.NGROK_PORT }}" && \
-          echo "✅ Port is open" || \
+          echo "✅ Port is accessible" || \
           echo "❌ Port is not accessible"
 
-      # Test SSH connection with verbose output
-      - name: Test SSH Connection
-        run: |
-          # Create temporary SSH key file
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > tmp_key
-          chmod 600 tmp_key
-
-          # Test SSH connection with verbose output
-          echo "Testing SSH connection to ${{ secrets.SSH_USER }}@${{ env.NGROK_HOST }}:${{ env.NGROK_PORT }}"
-          ssh -v \
+          # Test SSH connection
+          ssh -i pem_key \
+            -p ${{ env.NGROK_PORT }} \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=15 \
             -o BatchMode=yes \
-            -o ConnectTimeout=10 \
-            -i tmp_key \
-            -p ${{ env.NGROK_PORT }} \
             ${{ secrets.SSH_USER }}@${{ env.NGROK_HOST }} \
-            "echo 'SSH connection successful'" || true
-            
-          # Clean up
-          rm -f tmp_key
+            "echo '✅ SSH connection successful!'" || \
+          echo "❌ SSH connection failed"
 
-      # Alternative SSH test using native SSH command
-      - name: Test SSH Connection (Alternative)
+      # Upload files using SCP with the converted key
+      - name: Upload backend
         run: |
-          # Write private key to file
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
+          echo "📤 Uploading backend..."
 
-          # Test connection
-          ssh -i ~/.ssh/deploy_key \
-            -p ${{ env.NGROK_PORT }} \
+          scp -i pem_key \
+            -P ${{ env.NGROK_PORT }} \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
-            ${{ secrets.SSH_USER }}@${{ env.NGROK_HOST }} \
-            "echo '✅ SSH connection test successful'" || \
-          echo "❌ SSH connection failed - checking server configuration"
-
-          # Debug: Check if we can at least connect to the port
-          echo "Testing raw TCP connection..."
-          nc -zv -w 5 ${{ env.NGROK_HOST }} ${{ env.NGROK_PORT }} || \
-          echo "❌ Cannot connect to SSH port"
-
-      # Manual SSH debugging step
-      - name: Debug SSH issues
-        run: |
-          echo "=== SSH Debug Information ==="
-          echo "Host: ${{ env.NGROK_HOST }}"
-          echo "Port: ${{ env.NGROK_PORT }}"
-          echo "User: ${{ secrets.SSH_USER }}"
-          echo "Key available: $([ -n \"${{ secrets.SSH_PRIVATE_KEY }}\" ] && echo \"YES\" || echo \"NO\")"
-          echo "============================"
-
-          # Check if ngrok tunnel is still active
-          if curl -s http://127.0.0.1:4040/api/tunnels > /dev/null 2>&1; then
-            echo "✅ Ngrok tunnel is active"
-            curl -s http://127.0.0.1:4040/api/tunnels | jq . 2>/dev/null || \
-            curl -s http://127.0.0.1:4040/api/tunnels
-          else
-            echo "❌ Ngrok tunnel is not responding"
-          fi
-
-      # Only proceed if we can verify the tunnel is working
-      - name: Verify tunnel before proceeding
-        id: verify-tunnel
-        run: |
-          # Check if we can connect to the tunnel port
-          if timeout 5 bash -c "echo > /dev/tcp/${{ env.NGROK_HOST }}/${{ env.NGROK_PORT }}"; then
-            echo "✅ Tunnel verification passed"
-            echo "proceed=true" >> $GITHUB_OUTPUT
-          else
-            echo "❌ Tunnel verification failed"
-            echo "proceed=false" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-
-      # Upload packages to server through ngrok tunnel (only if tunnel works)
-      - name: Upload backend
-        if: steps.verify-tunnel.outputs.proceed == 'true'
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ env.NGROK_HOST }}
-          port: ${{ env.NGROK_PORT }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "backend.tar.gz"
-          target: "/tmp/"
+            -o ConnectTimeout=30 \
+            backend.tar.gz \
+            ${{ secrets.SSH_USER }}@${{ env.NGROK_HOST }}:/tmp/ && \
+          echo "✅ Backend uploaded successfully" || \
+          echo "❌ Backend upload failed"
 
       - name: Upload frontend
-        if: steps.verify-tunnel.outputs.proceed == 'true'
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ env.NGROK_HOST }}
-          port: ${{ env.NGROK_PORT }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "frontend.tar.gz"
-          target: "/tmp/"
+        run: |
+          echo "📤 Uploading frontend..."
 
-      # Deploy applications to server
+          scp -i pem_key \
+            -P ${{ env.NGROK_PORT }} \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=30 \
+            frontend.tar.gz \
+            ${{ secrets.SSH_USER }}@${{ env.NGROK_HOST }}:/tmp/ && \
+          echo "✅ Frontend uploaded successfully" || \
+          echo "❌ Frontend upload failed"
+
+      # Deploy applications
       - name: Deploy backend
-        if: steps.verify-tunnel.outputs.proceed == 'true'
-        uses: appleboy/ssh-action@v1.2.1
-        with:
-          host: ${{ env.NGROK_HOST }}
-          port: ${{ env.NGROK_PORT }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            set -e
-            echo "🚀 Starting backend deployment..."
+        run: |
+          echo "🚀 Deploying backend..."
 
+          ssh -i pem_key \
+            -p ${{ env.NGROK_PORT }} \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=30 \
+            ${{ secrets.SSH_USER }}@${{ env.NGROK_HOST }} << 'EOF'
+            set -e
+            echo "Starting backend deployment..."
+            
             # Install Node.js if not present
             if ! command -v node &> /dev/null; then
-              echo "📦 Installing Node.js..."
+              echo "Installing Node.js..."
               curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
               sudo apt-get install -y nodejs
             fi
-
+            
             # Install PM2 if not present
             if ! command -v pm2 &> /dev/null; then
-              echo "📦 Installing PM2..."
+              echo "Installing PM2..."
               sudo npm install -g pm2
             fi
-
+            
             APP_DIR="/home/roo/backend"
             PM2_APP_NAME="semi-backend"
-
+            
             # Create app directory
             mkdir -p $APP_DIR
-
+            
             # Extract and setup backend
+            echo "Extracting backend..."
             tar -xzf /tmp/backend.tar.gz -C $APP_DIR --strip-components=1
             cd $APP_DIR
+            echo "Installing dependencies..."
             npm install --production
-
+            
             # Start with PM2
+            echo "Starting application with PM2..."
             pm2 delete $PM2_APP_NAME 2>/dev/null || true
             pm2 start npm --name "$PM2_APP_NAME" -- start
             pm2 save
             pm2 startup 2>/dev/null || true
-
+            
             echo "✅ Backend deployed successfully!"
+            EOF
 
       - name: Deploy frontend
-        if: steps.verify-tunnel.outputs.proceed == 'true'
-        uses: appleboy/ssh-action@v1.2.1
-        with:
-          host: ${{ env.NGROK_HOST }}
-          port: ${{ env.NGROK_PORT }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
+        run: |
+          echo "🚀 Deploying frontend..."
+
+          ssh -i pem_key \
+            -p ${{ env.NGROK_PORT }} \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=30 \
+            ${{ secrets.SSH_USER }}@${{ env.NGROK_HOST }} << 'EOF'
             set -e
-            echo "🚀 Starting frontend deployment..."
-
+            echo "Starting frontend deployment..."
+            
             FRONT_DIR="/var/www/html"
-
+            
             # Install nginx if not present
             if ! command -v nginx &> /dev/null; then
-              echo "📦 Installing nginx..."
+              echo "Installing nginx..."
               sudo apt update
               sudo apt install nginx -y
             fi
-
+            
             # Create web directory
             sudo mkdir -p $FRONT_DIR
-
+            
             # Extract frontend build
+            echo "Extracting frontend..."
             sudo tar -xzf /tmp/frontend.tar.gz -C $FRONT_DIR --strip-components=1
             sudo chown -R www-data:www-data $FRONT_DIR
             sudo chmod -R 755 $FRONT_DIR
-
+            
             # Configure nginx
-            echo "📝 Configuring nginx..."
-            sudo bash -c 'cat > /etc/nginx/sites-available/default << EOF
-            server {
-                listen 80 default_server;
-                listen [::]:80 default_server;
-                
-                root /var/www/html;
-                index index.html index.htm;
-                
-                server_name _;
-                
-                location / {
-                    try_files \$uri \$uri/ /index.html;
-                }
-                
-                # Proxy API requests to backend
-                location /api {
-                    proxy_pass http://localhost:3000;
-                    proxy_http_version 1.1;
-                    proxy_set_header Upgrade \$http_upgrade;
-                    proxy_set_header Connection "upgrade";
-                    proxy_set_header Host \$host;
-                    proxy_cache_bypass \$http_upgrade;
-                }
-            }
-            EOF'
+            echo "Configuring nginx..."
+            sudo bash -c 'cat > /etc/nginx/sites-available/default << "NGINX_CONFIG"
+          server {
+          listen 80 default_server;
+          listen [::]:80 default_server;
 
+          root /var/www/html;
+          index index.html index.htm;
+
+          server_name _;
+
+          location / {
+              try_files $uri $uri/ /index.html;
+          }
+
+          location /api {
+              proxy_pass http://localhost:3000;
+              proxy_http_version 1.1;
+              proxy_set_header Upgrade $http_upgrade;
+              proxy_set_header Connection "upgrade";
+              proxy_set_header Host $host;
+              proxy_cache_bypass $http_upgrade;
+          }
+          }
+          NGINX_CONFIG'
+            
             # Enable and start nginx
             sudo systemctl enable nginx
             if sudo systemctl is-active --quiet nginx; then
@@ -331,12 +297,75 @@ jobs:
             else
               sudo systemctl start nginx
             fi
-
+            
             echo "✅ Frontend deployed successfully!"
+          EOF
 
-      # Cleanup ngrok tunnel
-      - name: Cleanup ngrok tunnel
-        if: always()
-        run: |
-          pkill -f "ngrok tcp" || true
-          echo "🔒 Ngrok tunnel closed"
+          # Setup ngrok for application access
+          - name: Setup ngrok for application access
+            run: |
+              echo "🌐 Setting up ngrok for application access..."
+              
+              ssh -i pem_key \
+                -p ${{ env.NGROK_PORT }} \
+                -o StrictHostKeyChecking=no \
+                -o UserKnownHostsFile=/dev/null \
+                ${{ secrets.SSH_USER }}@${{ env.NGROK_HOST }} << 'EOF'
+                set -e
+                echo "Setting up ngrok..."
+                
+                # Install latest ngrok version on server
+                if ! command -v ngrok &> /dev/null; then
+                  echo "Installing ngrok..."
+                  wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz -O ngrok.tgz
+                  tar -xzf ngrok.tgz
+                  sudo mv ngrok /usr/local/bin/
+                  rm ngrok.tgz
+                fi
+                
+                # Create ngrok config
+                mkdir -p ~/.config/ngrok
+                echo "authtoken: ${{ secrets.NGROK_AUTH_TOKEN }}" > ~/.config/ngrok/ngrok.yml
+                echo "web_addr: 0.0.0.0:4040" >> ~/.config/ngrok/ngrok.yml
+                
+                # Kill any existing ngrok processes
+                pkill -f "ngrok http" || true
+                sleep 2
+                
+                # Start ngrok for port 80 (nginx)
+                nohup ngrok http 80 --log=stdout > /tmp/ngrok.log 2>&1 &
+                sleep 5
+                
+                # Check if ngrok started successfully
+                if pgrep -f "ngrok http" > /dev/null; then
+                  echo "ngrok tunnel started successfully"
+                  
+                  # Get public URL
+                  for i in {1..10}; do
+                    if curl -s http://127.0.0.1:4040/api/tunnels > /tmp/tunnels.json; then
+                      URL=$(grep -o '"public_url":"https://[^"]*"' /tmp/tunnels.json | head -1 | cut -d'"' -f4)
+                      if [ -n "$URL" ]; then
+                        echo "🌐 Your application is available at: $URL"
+                        break
+                      fi
+                    fi
+                    sleep 2
+                  done
+                  
+                  if [ -z "$URL" ]; then
+                    echo "Could not retrieve URL. Check ngrok logs:"
+                    cat /tmp/ngrok.log || true
+                  fi
+                else
+                  echo "ngrok failed to start"
+                  cat /tmp/ngrok.log || true
+                  exit 1
+                fi
+                EOF
+
+            # Cleanup
+            - name: Cleanup
+              run: |
+                rm -f openssh_key pem_key 2>/dev/null || true
+                pkill -f "ngrok tcp" 2>/dev/null || true
+                echo "✅ Deployment completed"
