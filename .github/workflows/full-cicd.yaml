@@ -60,23 +60,37 @@ jobs:
       - name: Setup ngrok SSH tunnel
         id: ngrok-tunnel
         run: |
-          # Install ngrok
-          wget -q https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip -O ngrok.zip
-          unzip -q ngrok.zip
+          # Install the latest version of ngrok (fixing the version issue)
+          echo "📦 Installing latest ngrok version..."
+          wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz -O ngrok.tgz
+          tar -xzf ngrok.tgz
           chmod +x ngrok
+          rm ngrok.tgz
 
           # Set up ngrok with auth token
-          ./ngrok authtoken "${{ secrets.NGROK_AUTH_TOKEN }}"
+          ./ngrok config add-authtoken "${{ secrets.NGROK_AUTH_TOKEN }}"
 
           # Start ngrok TCP tunnel for SSH
           ./ngrok tcp 22 --log=stdout > ngrok.log &
+          NGORK_PID=$!
           sleep 5
 
           # Get public URL
-          NGROK_URL=$(curl -s http://127.0.0.1:4040/api/tunnels | grep -o 'tcp://[^"]*' | head -1)
+          for i in {1..10}; do
+            if curl -s http://127.0.0.1:4040/api/tunnels > tunnels.json; then
+              NGROK_URL=$(grep -o 'tcp://[^"]*' tunnels.json | head -1)
+              if [ -n "$NGROK_URL" ]; then
+                break
+              fi
+            fi
+            sleep 2
+          done
+
           if [ -z "$NGROK_URL" ]; then
             echo "❌ Failed to get ngrok URL"
             cat ngrok.log
+            # Try to kill ngrok process
+            kill $NGORK_PID 2>/dev/null || true
             exit 1
           fi
 
@@ -213,7 +227,7 @@ jobs:
                     proxy_pass http://localhost:3000;
                     proxy_http_version 1.1;
                     proxy_set_header Upgrade \$http_upgrade;
-                    proxy_set_header Connection 'upgrade';
+                    proxy_set_header Connection "upgrade";
                     proxy_set_header Host \$host;
                     proxy_cache_bypass \$http_upgrade;
                 }
@@ -242,13 +256,13 @@ jobs:
             set -e
             echo "🌐 Setting up ngrok for application access..."
 
-            # Install ngrok if not installed
+            # Install latest ngrok version on server
             if ! command -v ngrok &> /dev/null; then
-              echo "📦 Installing ngrok..."
-              wget -q https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip -O ngrok.zip
-              unzip -q ngrok.zip
+              echo "📦 Installing ngrok on server..."
+              wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz -O ngrok.tgz
+              tar -xzf ngrok.tgz
               sudo mv ngrok /usr/local/bin/
-              rm ngrok.zip 2>/dev/null || true
+              rm ngrok.tgz
             fi
 
             # Create ngrok config directory and file
@@ -270,10 +284,12 @@ jobs:
               
               # Try to get URL with retries
               for i in {1..10}; do
-                URL=$(curl -s http://127.0.0.1:4040/api/tunnels 2>/dev/null | grep -o '"public_url":"https://[^"]*"' | head -1 | cut -d'"' -f4 || true)
-                if [ -n "$URL" ]; then
-                  echo "🌐 Your application is available at: $URL"
-                  break
+                if curl -s http://127.0.0.1:4040/api/tunnels > /tmp/tunnels.json; then
+                  URL=$(grep -o '"public_url":"https://[^"]*"' /tmp/tunnels.json | head -1 | cut -d'"' -f4)
+                  if [ -n "$URL" ]; then
+                    echo "🌐 Your application is available at: $URL"
+                    break
+                  fi
                 fi
                 sleep 2
               done
