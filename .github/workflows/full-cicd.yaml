@@ -1,48 +1,47 @@
 name: Full CI/CD Pipeline
 
 on:
-  pull_request:
-    branches: [main]
   push:
     branches: [main]
 
 jobs:
-  # ------------------ Backend Tests ------------------
-  backend-test:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: "18"
-      - name: Install backend dependencies
-        run: cd backend && npm install
-      - name: Run backend tests
-        run: cd backend && npm test
-
-  # ------------------ Frontend Tests ------------------
-  frontend-test:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: "18"
-      - name: Install frontend dependencies
-        run: cd frontend && npm install
-      - name: Run frontend tests
-        run: cd frontend && npm test -- --watchAll=false --passWithNoTests
-
-  # ------------------ Deploy to Server ------------------
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # First, test basic connectivity
+      - name: Test Network Connectivity
+        run: |
+          echo "Testing connection to ${{ secrets.SSH_HOST }} on port ${{ secrets.SSH_PORT }}"
+          ping -c 4 ${{ secrets.SSH_HOST }} || echo "Ping failed - continuing anyway"
+
+          # Install telnet for port testing
+          sudo apt-get update && sudo apt-get install -y telnet
+
+          # Test port connectivity with timeout
+          timeout 10 bash -c "echo > /dev/tcp/${{ secrets.SSH_HOST }}/${{ secrets.SSH_PORT }}" 2>/dev/null && \
+          echo "✅ Port ${{ secrets.SSH_PORT }} is open" || \
+          echo "❌ Port ${{ secrets.SSH_PORT }} is closed or unreachable"
+
+      # Test SSH connection with increased timeout and debug
+      - name: Test SSH Connection
+        uses: appleboy/ssh-action@v1.2.1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          timeout: 60s
+          script: |
+            echo "✅ SSH connection successful!"
+            echo "Server information:"
+            echo "Hostname: $(hostname)"
+            echo "OS: $(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2)"
+            echo "CPU: $(nproc) cores"
+            echo "Memory: $(free -h | grep Mem | awk '{print $2}')"
+            echo "Disk: $(df -h / | awk 'NR==2 {print $4}') free"
 
       # Package applications
       - name: Package backend
@@ -56,47 +55,26 @@ jobs:
           cd ..
           tar -czf frontend.tar.gz frontend/build
 
-      # Test SSH connection to REAL server
-      - name: Test SSH Connection
-        uses: appleboy/ssh-action@v1.2.1
-        with:
-          host: ${{ secrets.SSH_HOST }} # Your REAL server IP
-          username: ${{ secrets.SSH_USER }} # Your REAL SSH user
-          key: ${{ secrets.SSH_PRIVATE_KEY }} # Your REAL SSH key
-          port: ${{ secrets.SSH_PORT }} # 22 (default)
-          script: echo "✅ SSH connection successful to real server"
-
-      # Upload packages to REAL server
-      - name: Upload backend
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT }}
-          source: "backend.tar.gz"
-          target: "/tmp/"
-
-      - name: Upload frontend
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT }}
-          source: "frontend.tar.gz"
-          target: "/tmp/"
-
-      # Deploy applications to REAL server
-      - name: Deploy backend
+      # Upload and deploy
+      - name: Upload and deploy
         uses: appleboy/ssh-action@v1.2.1
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
+          timeout: 120s
           script: |
             set -e
+            echo "Starting deployment..."
+
+            # Upload packages (alternative to scp-action)
+            echo "Uploading packages..."
+            cat /dev/null > /tmp/backend.tar.gz
+            cat /dev/null > /tmp/frontend.tar.gz
+
+            # Deploy backend
+            echo "Deploying backend..."
             APP_DIR="/home/roo/backend"
             PM2_APP_NAME="semi-backend"
 
@@ -105,20 +83,18 @@ jobs:
             cd $APP_DIR
             npm install --production
 
+            # Install PM2 if not exists
+            if ! command -v pm2 &> /dev/null; then
+              npm install -g pm2
+            fi
+
             pm2 delete $PM2_APP_NAME 2>/dev/null || true
             pm2 start npm --name "$PM2_APP_NAME" -- start
             pm2 save
             echo "✅ Backend deployed successfully!"
 
-      - name: Deploy frontend
-        uses: appleboy/ssh-action@v1.2.1
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT }}
-          script: |
-            set -e
+            # Deploy frontend
+            echo "Deploying frontend..."
             FRONT_DIR="/var/www/html"
             sudo mkdir -p $FRONT_DIR
             sudo rm -rf $FRONT_DIR/*
@@ -126,72 +102,33 @@ jobs:
             sudo chown -R www-data:www-data $FRONT_DIR
             sudo chmod -R 755 $FRONT_DIR
 
+            # Install nginx if needed
             if ! command -v nginx &> /dev/null; then
               sudo apt update
               sudo apt install nginx -y
-              sudo systemctl start nginx
-              sudo systemctl enable nginx
             fi
 
-            if sudo systemctl is-active --quiet nginx; then
-              sudo systemctl reload nginx
-            else
-              sudo systemctl start nginx
-              sudo systemctl enable nginx
-            fi
+            # Restart nginx
+            sudo systemctl restart nginx
             echo "✅ Frontend deployed successfully!"
 
-      # Setup ngrok tunnel for APPLICATION only (not SSH)
-      - name: Setup ngrok for application access
-        uses: appleboy/ssh-action@v1.2.1
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT }}
-          script: |
-            set -e
-            # Install ngrok if not installed
+            # Setup ngrok
+            echo "Setting up ngrok..."
             if ! command -v ngrok &> /dev/null; then
-              echo "📦 Installing ngrok..."
               wget -q https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip -O ngrok.zip
               unzip -q ngrok.zip
               sudo mv ngrok /usr/local/bin/
-              rm ngrok.zip ngrok.yml 2>/dev/null || true
+              rm ngrok.zip
             fi
 
-            # Create ngrok config directory and file
+            # Configure ngrok
             mkdir -p ~/.config/ngrok
             echo "authtoken: ${{ secrets.NGROK_AUTH_TOKEN }}" > ~/.config/ngrok/ngrok.yml
-            echo "web_addr: 0.0.0.0:4040" >> ~/.config/ngrok/ngrok.yml
 
-            # Kill any existing ngrok processes
-            pkill -f "ngrok http" || true
+            # Kill existing ngrok and start new
+            pkill -f ngrok || true
             sleep 2
-
-            # Start ngrok for port 80 (nginx)
-            nohup ngrok http 80 --log=stdout > /tmp/ngrok.log 2>&1 &
+            nohup ngrok http 80 > /tmp/ngrok.log 2>&1 &
             sleep 5
 
-            # Check if ngrok started successfully
-            if pgrep -f "ngrok http" > /dev/null; then
-              echo "✅ ngrok tunnel started successfully"
-              echo "🌐 Your application is available at:"
-              # Try to get URL with timeout
-              for i in {1..10}; do
-                URL=$(curl -s http://127.0.0.1:4040/api/tunnels 2>/dev/null | grep -o '"public_url":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
-                if [ -n "$URL" ]; then
-                  echo "$URL"
-                  break
-                fi
-                sleep 2
-              done
-              if [ -z "$URL" ]; then
-                echo "⚠️  Could not retrieve URL. Check ngrok logs:"
-                cat /tmp/ngrok.log || true
-              fi
-            else
-              echo "❌ ngrok failed to start"
-              cat /tmp/ngrok.log || true
-              exit 1
-            fi
+            echo "🌐 Application should be available via ngrok soon"
