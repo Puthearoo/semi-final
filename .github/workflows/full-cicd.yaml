@@ -9,64 +9,45 @@ on:
 jobs:
   # ------------------ Backend Tests ------------------
   backend-test:
-    # Run tests on PR to main
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
           node-version: "18"
-
       - name: Install backend dependencies
-        run: |
-          cd backend
-          npm install
-
+        run: cd backend && npm install
       - name: Run backend tests
-        run: |
-          cd backend
-          npm test
+        run: cd backend && npm test
 
   # ------------------ Frontend Tests ------------------
   frontend-test:
-    # Run tests on PR to main
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
           node-version: "18"
-
       - name: Install frontend dependencies
-        run: |
-          cd frontend
-          npm install
-
+        run: cd frontend && npm install
       - name: Run frontend tests
-        run: |
-          cd frontend
-          npm test -- --watchAll=false --passWithNoTests
+        run: cd frontend && npm test -- --watchAll=false --passWithNoTests
 
   # ------------------ Deploy to Server ------------------
   deploy:
-    # Only deploy when code is pushed/merged to main branch
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # --- Package Backend ---
+      # Package applications
       - name: Package backend
-        run: |
-          tar -czf backend.tar.gz backend
+        run: tar -czf backend.tar.gz backend
 
-      # --- Build and Package Frontend ---
       - name: Build and package frontend
         run: |
           cd frontend
@@ -75,17 +56,17 @@ jobs:
           cd ..
           tar -czf frontend.tar.gz frontend/build
 
-      # --- Test SSH Connection ---
-      - name: Test SSH
+      # Test SSH connection to REAL server
+      - name: Test SSH Connection
         uses: appleboy/ssh-action@v1.2.1
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT }}
-          script: echo "✅ SSH connection successful"
+          host: ${{ secrets.SSH_HOST }} # Your REAL server IP
+          username: ${{ secrets.SSH_USER }} # Your REAL SSH user
+          key: ${{ secrets.SSH_PRIVATE_KEY }} # Your REAL SSH key
+          port: ${{ secrets.SSH_PORT }} # 22 (default)
+          script: echo "✅ SSH connection successful to real server"
 
-      # --- Upload Packages ---
+      # Upload packages to REAL server
       - name: Upload backend
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -106,7 +87,7 @@ jobs:
           source: "frontend.tar.gz"
           target: "/tmp/"
 
-      # --- Deploy Backend ---
+      # Deploy applications to REAL server
       - name: Deploy backend
         uses: appleboy/ssh-action@v1.2.1
         with:
@@ -129,7 +110,6 @@ jobs:
             pm2 save
             echo "✅ Backend deployed successfully!"
 
-      # --- Deploy Frontend ---
       - name: Deploy frontend
         uses: appleboy/ssh-action@v1.2.1
         with:
@@ -146,29 +126,23 @@ jobs:
             sudo chown -R www-data:www-data $FRONT_DIR
             sudo chmod -R 755 $FRONT_DIR
 
-            # Check if nginx is installed, install if not
             if ! command -v nginx &> /dev/null; then
-              echo "🔄 Installing nginx..."
               sudo apt update
               sudo apt install nginx -y
               sudo systemctl start nginx
               sudo systemctl enable nginx
             fi
 
-            # Start nginx if not running, otherwise reload
             if sudo systemctl is-active --quiet nginx; then
-              echo "🔄 Reloading nginx..."
               sudo systemctl reload nginx
             else
-              echo "🚀 Starting nginx..."
               sudo systemctl start nginx
               sudo systemctl enable nginx
             fi
-
             echo "✅ Frontend deployed successfully!"
 
-      # --- Setup ngrok Tunnel ---
-      - name: Setup ngrok
+      # Setup ngrok tunnel for APPLICATION only (not SSH)
+      - name: Setup ngrok for application access
         uses: appleboy/ssh-action@v1.2.1
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -180,34 +154,42 @@ jobs:
             # Install ngrok if not installed
             if ! command -v ngrok &> /dev/null; then
               echo "📦 Installing ngrok..."
-              wget https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip -O ngrok.zip
-              unzip ngrok.zip
+              wget -q https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip -O ngrok.zip
+              unzip -q ngrok.zip
               sudo mv ngrok /usr/local/bin/
-              rm ngrok.zip
+              rm ngrok.zip ngrok.yml 2>/dev/null || true
             fi
 
-            # Set auth token non-interactively
+            # Create ngrok config directory and file
             mkdir -p ~/.config/ngrok
             echo "authtoken: ${{ secrets.NGROK_AUTH_TOKEN }}" > ~/.config/ngrok/ngrok.yml
-            echo "web_addr: 127.0.0.1:4040" >> ~/.config/ngrok/ngrok.yml
+            echo "web_addr: 0.0.0.0:4040" >> ~/.config/ngrok/ngrok.yml
 
             # Kill any existing ngrok processes
-            pkill -f ngrok || true
+            pkill -f "ngrok http" || true
             sleep 2
 
-            # Start ngrok HTTP tunnel (not TCP)
-            nohup ngrok http 80 > /tmp/ngrok.log 2>&1 &
+            # Start ngrok for port 80 (nginx)
+            nohup ngrok http 80 --log=stdout > /tmp/ngrok.log 2>&1 &
+            sleep 5
 
-            # Wait for ngrok to start
-            sleep 10
-
-            # Check if ngrok is running
-            if pgrep -f ngrok > /dev/null; then
+            # Check if ngrok started successfully
+            if pgrep -f "ngrok http" > /dev/null; then
               echo "✅ ngrok tunnel started successfully"
-              # Get public URL
-              echo "🌐 Frontend Public URL:"
-              curl -s http://127.0.0.1:4040/api/tunnels | jq -r '.tunnels[0].public_url' 2>/dev/null || \
-              curl -s http://127.0.0.1:4040/api/tunnels | grep -o '"public_url":"[^"]*"' | head -1 | cut -d'"' -f4
+              echo "🌐 Your application is available at:"
+              # Try to get URL with timeout
+              for i in {1..10}; do
+                URL=$(curl -s http://127.0.0.1:4040/api/tunnels 2>/dev/null | grep -o '"public_url":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+                if [ -n "$URL" ]; then
+                  echo "$URL"
+                  break
+                fi
+                sleep 2
+              done
+              if [ -z "$URL" ]; then
+                echo "⚠️  Could not retrieve URL. Check ngrok logs:"
+                cat /tmp/ngrok.log || true
+              fi
             else
               echo "❌ ngrok failed to start"
               cat /tmp/ngrok.log || true
