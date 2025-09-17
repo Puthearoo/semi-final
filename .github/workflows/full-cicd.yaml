@@ -195,8 +195,8 @@ jobs:
             pkill -f ngrok || true
             sleep 2
 
-            # Start ngrok for port 3001 (frontend) in background
-            nohup ngrok http 3001 > /tmp/ngrok.log 2>&1 &
+            # Start ngrok HTTP tunnel (not TCP)
+            nohup ngrok http 80 > /tmp/ngrok.log 2>&1 &
 
             # Wait for ngrok to start
             sleep 10
@@ -206,7 +206,7 @@ jobs:
               echo "✅ ngrok tunnel started successfully"
               # Get public URL
               echo "🌐 Frontend Public URL:"
-              curl -s http://127.0.0.1:4040/api/tunnels | jq -r '.tunnels[0].public_url' || \
+              curl -s http://127.0.0.1:4040/api/tunnels | jq -r '.tunnels[0].public_url' 2>/dev/null || \
               curl -s http://127.0.0.1:4040/api/tunnels | grep -o '"public_url":"[^"]*"' | head -1 | cut -d'"' -f4
             else
               echo "❌ ngrok failed to start"
