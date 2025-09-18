@@ -64,7 +64,7 @@ jobs:
           npm install
           npm run build
           cd ..
-          tar -czf frontend.tar.gz frontend/dist
+          tar -czf frontend.tar.gz frontend
 
       - name: Test SSH connection
         uses: appleboy/ssh-action@v1.2.1
