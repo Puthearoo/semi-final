@@ -11,17 +11,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
           node-version: "18"
-
       - name: Install backend dependencies
         run: |
           cd backend
           npm install
-
       - name: Run backend tests
         run: |
           cd backend
@@ -31,17 +28,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
           node-version: "18"
-
       - name: Install frontend dependencies
         run: |
           cd frontend
           npm install
-
       - name: Run frontend tests
         run: |
           cd frontend
@@ -58,13 +52,25 @@ jobs:
         run: |
           tar -czf backend.tar.gz backend
 
-      - name: Build and package frontend
+      - name: Package frontend HTML files
         run: |
-          cd frontend
-          npm install
-          npm run build
-          cd ..
-          tar -czf frontend.tar.gz frontend
+          # Create a directory structure that matches your server
+          mkdir -p deploy-html
+          # Copy all HTML files and related assets
+          cp -r frontend/* deploy-html/ 2>/dev/null || true
+          cp *.html deploy-html/ 2>/dev/null || true
+          cp -r css/ js/ images/ deploy-html/ 2>/dev/null || true
+
+          # Show what we're packaging
+          echo "Packaging these files:"
+          find deploy-html/ -type f -name "*.html" | head -10
+
+          # Create archive
+          tar -czf frontend.tar.gz deploy-html/
+
+          # Show archive contents
+          echo "Archive contents:"
+          tar -tzf frontend.tar.gz | head -10
 
       - name: Test SSH connection
         uses: appleboy/ssh-action@v0.1.7
@@ -73,8 +79,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
-          script: echo "✅ SSH connection successful via Ngrok"
-          timeout: 30s
+          script: echo "✅ SSH connection successful"
 
       - name: Upload backend
         uses: appleboy/scp-action@v0.1.7
@@ -113,7 +118,6 @@ jobs:
             cd $APP_DIR
             npm install --production
 
-            # Install PM2 if not exists
             if ! command -v pm2 &> /dev/null; then
               npm install -g pm2
             fi
@@ -133,9 +137,24 @@ jobs:
           script: |
             set -e
             FRONT_DIR="/var/www/html"
-            sudo mkdir -p $FRONT_DIR
+
+            # Debug: Show what's in the archive
+            echo "Contents of frontend archive:"
+            tar -tzf /tmp/frontend.tar.gz | head -10
+
+            # Clean target directory
             sudo rm -rf $FRONT_DIR/*
+
+            # Extract files
             sudo tar -xzf /tmp/frontend.tar.gz -C $FRONT_DIR --strip-components=1
+
+            # Debug: Show deployed files
+            echo "Deployed files:"
+            sudo ls -la $FRONT_DIR
+            echo "HTML files:"
+            sudo find $FRONT_DIR -name "*.html" -exec ls -la {} \;
+
+            # Set permissions
             sudo chown -R www-data:www-data $FRONT_DIR
             sudo chmod -R 755 $FRONT_DIR
 
