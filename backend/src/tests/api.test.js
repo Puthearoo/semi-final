@@ -1,6 +1,17 @@
 import request from 'supertest';
 import app from '../server.js';
 
+// Store the server instance to close it later
+let server;
+
+beforeAll((done) => {
+  server = app.listen(0, done); // Use random port for tests
+});
+
+afterAll((done) => {
+  server.close(done);
+});
+
 describe('API Tests', () => {
   test('GET /api/hello should return hello message', async () => {
     const response = await request(app).get('/api/hello');

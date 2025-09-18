@@ -1,7 +1,8 @@
-export default {
+module.exports = {
   testEnvironment: 'node',
   transform: {
     '^.+\\.js$': 'babel-jest'
   },
-  moduleFileExtensions: ['js', 'json']
+  forceExit: true, // Add this line
+  testTimeout: 30000 // Optional: increase timeout if needed
 };
