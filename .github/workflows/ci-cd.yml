@@ -67,13 +67,19 @@ jobs:
           tar -czf frontend.tar.gz frontend
 
       - name: Test SSH connection
-        uses: appleboy/ssh-action@v1.2.1
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT }}
-          script: echo "✅ SSH connection successful"
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          # Create the SSH key file
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/github-deploy-key
+          chmod 600 ~/.ssh/github-deploy-key
+
+          # Test connection
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/github-deploy-key -p $SSH_PORT $SSH_USER@$SSH_HOST "echo '✅ SSH connection successful'"
 
       - name: Upload backend
         uses: appleboy/scp-action@v0.1.7
